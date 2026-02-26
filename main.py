@@ -4,8 +4,9 @@ import subprocess
 import shutil
 import zipfile
 import time
-import json
+import requests
 from telebot import types
+from pymongo import MongoClient
 
 # --- CONFIGURATION ---
 TOKEN = '8635303381:AAH41sv7OVHm7WWAOFzKr3h68Fk0v0j2EvQ'
@@ -13,28 +14,26 @@ ADMIN_ID = 8381570120
 IMAGE_URL = "https://raw.githubusercontent.com/ApkNebulix/Daroid-AN/refs/heads/main/Img/apknebulix.jpg"
 REQUIRED_CHANNELS = ["@ShimulXDModZ"]
 
+# MongoDB Connection
+MONGO_URI = "mongodb+srv://apknebulix_modz:@%aN%#404%App@@apknebulix.suopcnt.mongodb.net/?appName=ApkNebulix"
+client = MongoClient(MONGO_URI)
+db = client['bot_database']
+users_col = db['users']
+banned_col = db['banned_users']
+
 bot = telebot.TeleBot(TOKEN)
 
-# ডাটাবেস সিমুলেশন (সহজ রাখার জন্য ফাইল ব্যবহার করা হয়েছে)
-DB_FILE = "bot_data.json"
-if not os.path.exists(DB_FILE):
-    with open(DB_FILE, "w") as f:
-        json.dump({"users": [], "banned": []}, f)
+# --- DATABASE HELPERS ---
+def register_user(user):
+    if not users_col.find_one({"user_id": user.id}):
+        users_col.insert_one({
+            "user_id": user.id,
+            "first_name": user.first_name,
+            "username": user.username
+        })
 
-def load_data():
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
-
-def save_data(data):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f)
-
-# ইউজার রেজিস্টার ফাংশন
-def register_user(user_id):
-    data = load_data()
-    if user_id not in data["users"]:
-        data["users"].append(user_id)
-        save_data(data)
+def is_banned(user_id):
+    return banned_col.find_one({"user_id": user_id}) is not None
 
 # --- UI & HELPERS ---
 def create_progress_bar(percent):
@@ -53,11 +52,23 @@ def is_subscribed(user_id):
             status = bot.get_chat_member(channel, user_id).status
             if status in ['left', 'kicked']: return False
         return True
-    except Exception:
-        return True # এরর এড়াতে True রাখা হয়েছে
+    except:
+        return True
+
+# --- LARGE FILE DOWNLOADER (Fix 413 Error) ---
+def download_large_file(file_id, save_path):
+    file_info = bot.get_file(file_id)
+    file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+    response = requests.get(file_url, stream=True)
+    if response.status_code == 200:
+        with open(save_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        return True
+    return False
 
 # --- MIDDLEWARE & SECURITY ---
-@bot.message_handler(func=lambda m: m.from_user.id in load_data()["banned"])
+@bot.message_handler(func=lambda m: is_banned(m.from_user.id))
 def handle_banned(message):
     bot.reply_to(message, "🚫 **Access Denied!**\nYou are banned from using this bot.")
 
@@ -65,7 +76,9 @@ def handle_banned(message):
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.from_user.id != ADMIN_ID: return
-    data = load_data()
+    total_users = users_col.count_documents({})
+    total_banned = banned_col.count_documents({})
+    
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("📊 Stats", callback_data="stats"),
@@ -78,139 +91,115 @@ def admin_panel(message):
         "🛠 **Admin Command Center**\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"👤 **Admin:** `Shimul XD`\n"
-        f"🆔 **ID:** `{ADMIN_ID}`\n"
-        f"👥 **Total Users:** `{len(data['users'])}` \n"
-        f"🚫 **Banned:** `{len(data['banned'])}`"
+        f"👥 **Total Users:** `{total_users}`\n"
+        f"🚫 **Banned:** `{total_banned}`"
     )
     bot.send_message(message.chat.id, admin_text, reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(commands=['userinfo'])
-def get_user_info(message):
+def get_all_users_info(message):
     if message.from_user.id != ADMIN_ID: return
-    target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
+    all_users = users_col.find()
+    info_text = "📜 **Bot User List (ID + Name):**\n━━━━━━━━━━━━━━━━━━\n"
+    for user in all_users:
+        info_text += f"🔹 `{user['user_id']}` | {user['first_name']}\n"
     
-    info = (
-        f"👤 **User Information**\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🔹 **Name:** `{target.first_name}`\n"
-        f"🔹 **Username:** @{target.username if target.username else 'N/A'}\n"
-        f"🔹 **Language:** `{target.language_code}`\n"
-        f"🔹 **ID:** `{target.id}`\n"
-        f"━━━━━━━━━━━━━━━━━━"
-    )
-    bot.reply_to(message, info, parse_mode="Markdown")
+    if len(info_text) > 4000: # টেলিগ্রাম টেক্সট লিমিট হ্যান্ডেল করা
+        with open("users.txt", "w") as f: f.write(info_text)
+        bot.send_document(message.chat.id, open("users.txt", "rb"))
+    else:
+        bot.send_message(message.chat.id, info_text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['ban'])
 def ban_user(message):
     if message.from_user.id != ADMIN_ID: return
+    target_id = None
     if message.reply_to_message:
         target_id = message.reply_to_message.from_user.id
-        data = load_data()
-        if target_id not in data["banned"]:
-            data["banned"].append(target_id)
-            save_data(data)
+    elif len(message.text.split()) > 1:
+        target_id = int(message.text.split()[1])
+
+    if target_id:
+        if not banned_col.find_one({"user_id": target_id}):
+            banned_col.insert_one({"user_id": target_id})
             bot.reply_to(message, f"✅ User `{target_id}` has been banned.")
     else:
-        bot.reply_to(message, "❌ Please reply to a user's message to ban them.")
+        bot.reply_to(message, "❌ Reply to a message or provide User ID.")
 
 @bot.message_handler(commands=['unban'])
 def unban_user(message):
     if message.from_user.id != ADMIN_ID: return
+    target_id = None
     if message.reply_to_message:
         target_id = message.reply_to_message.from_user.id
-        data = load_data()
-        if target_id in data["banned"]:
-            data["banned"].remove(target_id)
-            save_data(data)
-            bot.reply_to(message, f"✅ User `{target_id}` has been unbanned.")
-    else:
-        bot.reply_to(message, "❌ Reply to a user to unban.")
+    elif len(message.text.split()) > 1:
+        target_id = int(message.text.split()[1])
+
+    if target_id:
+        banned_col.delete_one({"user_id": target_id})
+        bot.reply_to(message, f"✅ User `{target_id}` has been unbanned.")
 
 @bot.message_handler(commands=['broadcast'])
 def broadcast_command(message):
     if message.from_user.id != ADMIN_ID: return
     if not message.reply_to_message:
-        bot.reply_to(message, "❌ **Error:** Please reply to a message (text/photo/video) to broadcast it.")
+        bot.reply_to(message, "❌ Reply to a message to broadcast.")
         return
     
-    data = load_data()
-    success = 0
-    fail = 0
-    bot.send_message(message.chat.id, "🚀 **Starting Broadcast...**")
-    
-    for user_id in data["users"]:
+    users = users_col.find()
+    success, fail = 0, 0
+    bot.send_message(message.chat.id, "🚀 **Broadcasting...**")
+    for user in users:
         try:
-            bot.copy_message(user_id, message.chat.id, message.reply_to_message.message_id)
+            bot.copy_message(user['user_id'], message.chat.id, message.reply_to_message.message_id)
             success += 1
-            time.sleep(0.1) # টেলিগ্রাম লিমিট এড়াতে
+            time.sleep(0.05)
         except:
             fail += 1
-            
-    bot.send_message(message.chat.id, f"📢 **Broadcast Completed!**\n\n✅ Success: {success}\n❌ Failed: {fail}")
+    bot.send_message(message.chat.id, f"✅ Done! Success: {success}, Failed: {fail}")
 
 # --- CALLBACK HANDLERS ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     if call.data == "verify":
         if is_subscribed(call.from_user.id):
-            bot.edit_message_caption("✅ **Verified Successfully!**\nYou can now send your zip files for dumping.", call.message.chat.id, call.message.message_id)
+            bot.edit_message_caption("✅ **Verified!** Send your zip file.", call.message.chat.id, call.message.message_id)
         else:
-            bot.answer_callback_query(call.id, "❌ Join the channel first!", show_alert=True)
-    
+            bot.answer_callback_query(call.id, "❌ Join the channel!", show_alert=True)
     elif call.data == "user_list":
-        if call.from_user.id != ADMIN_ID: return
-        data = load_data()
-        user_text = "📜 **Bot User List:**\n\n"
-        for idx, u_id in enumerate(data["users"][:50]): # প্রথম ৫০ জন দেখাবে
-            user_text += f"{idx+1}. `{u_id}`\n"
-        bot.send_message(call.message.chat.id, user_text, parse_mode="Markdown")
-
-    elif call.data == "broadcast_info":
-        bot.answer_callback_query(call.id, "Reply to any message with /broadcast", show_alert=True)
-    
+        get_all_users_info(call.message)
     elif call.data == "close_admin":
         bot.delete_message(call.message.chat.id, call.message.message_id)
 
-# --- START & VERIFY ---
+# --- START ---
 @bot.message_handler(commands=['start'])
 def welcome(message):
-    register_user(message.from_user.id)
+    register_user(message.from_user)
     if not is_subscribed(message.from_user.id):
         markup = types.InlineKeyboardMarkup()
         for ch in REQUIRED_CHANNELS:
             markup.add(types.InlineKeyboardButton(text="Join Channel 📢", url=f"https://t.me/{ch[1:]}"))
         markup.add(types.InlineKeyboardButton(text="🔄 Verify Membership", callback_data="verify"))
-        
-        bot.send_photo(message.chat.id, IMAGE_URL, 
-                       caption=f"👋 **Hello {message.from_user.first_name}!**\n\n⚠️ **Access Locked:**\nYou must join our official channels to use the **Blutter Pro Engine**.",
-                       parse_mode="Markdown", reply_markup=markup)
+        bot.send_photo(message.chat.id, IMAGE_URL, caption=f"👋 **Hello!**\nJoin our channel to use **Blutter Pro Engine**.", reply_markup=markup)
         return
 
     welcome_text = (
         "╔════════════════════╗\n"
-        "      🚀 **BLUTTER ENGINE PRO**\n"
+        "     🚀 **BLUTTER ENGINE PRO**\n"
         "╚════════════════════╝\n"
-        "🔹 **Status:** `Online / Ready` ✅\n"
-        "🔹 **Version:** `v2.5 High-Speed` ⚡\n"
+        "🔹 **Status:** `Online` ✅\n"
         "🔹 **Dev:** @ShimulXD\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "📥 **How to use:**\n"
-        "Send a `.zip` file containing:\n"
-        "📂 `libflutter.so` & `libapp.so` \n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "✨ **Features:** Auto-sed, C++ Core Dumping, High Compression Output."
+        "📥 Send a `.zip` file containing `libflutter.so` & `libapp.so`."
     )
     bot.send_photo(message.chat.id, IMAGE_URL, caption=welcome_text, parse_mode="Markdown")
 
-# --- DUMPING PROCESS (LOGIC UNCHANGED) ---
+# --- DUMPING PROCESS ---
 @bot.message_handler(content_types=['document'])
 def start_dump_process(message):
-    if not is_subscribed(message.from_user.id):
-        bot.reply_to(message, "⚠️ **Access Denied!** Join @ShimulXDModZ first.")
-        return
-
+    if not is_subscribed(message.from_user.id) or is_banned(message.from_user.id): return
     if not message.document.file_name.endswith('.zip'):
-        bot.reply_to(message, "❌ **Error:** Please send a valid `.zip` file.")
+        bot.reply_to(message, "❌ Send a `.zip` file.")
         return
 
     uid = str(message.chat.id)
@@ -221,24 +210,18 @@ def start_dump_process(message):
     status_msg = bot.reply_to(message, "🛰 **Initializing Engine...**", parse_mode="Markdown")
 
     try:
-        # Step 1: Download
-        bot.send_chat_action(message.chat.id, 'upload_document')
-        for i in range(10, 101, 30):
-            ani = get_status_animation(i//25)
-            bot.edit_message_text(f"{ani} **Downloading File...**\n{create_progress_bar(i)}", 
-                                  message.chat.id, status_msg.message_id, parse_mode="Markdown")
-            time.sleep(0.3)
-
-        file_info = bot.get_file(message.document.file_id)
-        downloaded = bot.download_file(file_info.file_path)
-        with open(f"{work_dir}/input.zip", 'wb') as f: f.write(downloaded)
+        # Step 1: Large File Download Fix
+        bot.edit_message_text(f"📥 **Downloading Large File...**\n{create_progress_bar(30)}", message.chat.id, status_msg.message_id, parse_mode="Markdown")
+        success = download_large_file(message.document.file_id, f"{work_dir}/input.zip")
+        
+        if not success:
+            bot.edit_message_text("❌ Download failed.", message.chat.id, status_msg.message_id)
+            return
 
         # Step 2: Extract
-        bot.edit_message_text("📂 **Extracting Resources...**\n`Analyzing Bytecode...` ⚡", 
-                              message.chat.id, status_msg.message_id, parse_mode="Markdown")
         with zipfile.ZipFile(f"{work_dir}/input.zip", 'r') as z: z.extractall(work_dir)
 
-        # Step 3: Dumping (Logic Intact)
+        # Step 3: Dumping Logic
         if not os.path.exists('blutter_src'):
             subprocess.run("git clone https://github.com/AbhiTheModder/blutter-termux.git blutter_src", shell=True)
         
@@ -249,34 +232,25 @@ def start_dump_process(message):
         process = subprocess.Popen(f"python3 blutter.py ../{work_dir} ../{out_dir}", shell=True)
         
         while process.poll() is None:
-            bot.send_chat_action(message.chat.id, 'typing')
             elapsed = int(time.time() - start_t)
-            ani = get_status_animation(elapsed)
-            bot.edit_message_text(f"{ani} **Dumping in Progress...**\n`Elapsed Time: {elapsed}s` ⏱\n`Status: Compiling C++ Core` 🛠", 
-                                  message.chat.id, status_msg.message_id, parse_mode="Markdown")
-            time.sleep(4)
+            bot.edit_message_text(f"⚡ **Dumping in Progress...**\n`Time: {elapsed}s`\n`Status: Compiling Core`", message.chat.id, status_msg.message_id, parse_mode="Markdown")
+            time.sleep(5)
 
         os.chdir('..')
 
         # Step 4: Finalizing
         if os.path.exists(out_dir) and any(os.scandir(out_dir)):
-            bot.edit_message_text("📦 **Dumping Finished!**\n`Zipping output files...` 📤", 
-                                  message.chat.id, status_msg.message_id, parse_mode="Markdown")
-            
             res_zip = f"Blutter_Output_{uid}.zip"
             shutil.make_archive(res_zip.replace('.zip',''), 'zip', out_dir)
-            
-            bot.send_chat_action(message.chat.id, 'upload_document')
             with open(res_zip, 'rb') as f:
-                bot.send_document(message.chat.id, f, caption=f"✅ **Dump Success!**\n⏱ **Time Taken:** {int(time.time()-start_t)}s\n👤 **By:** @ShimulXDModZ", parse_mode="Markdown")
+                bot.send_document(message.chat.id, f, caption=f"✅ **Dump Success!**\n👤 **By:** @ShimulXDModZ", parse_mode="Markdown")
             os.remove(res_zip)
         else:
-            bot.edit_message_text("❌ **Dumping Failed!**\nEnsure `libflutter.so` and `libapp.so` are in the zip root.", message.chat.id, status_msg.message_id)
+            bot.edit_message_text("❌ Dumping failed. Check files.", message.chat.id, status_msg.message_id)
 
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ **System Error:** `{str(e)}`")
 
-    # Cleanup
     shutil.rmtree(work_dir, ignore_errors=True)
     if os.path.exists(out_dir): shutil.rmtree(out_dir)
 
