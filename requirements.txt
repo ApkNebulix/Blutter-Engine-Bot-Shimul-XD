@@ -1,4 +1,5 @@
 pyTelegramBotAPI
-pymongo
-dnspython
 requests
+pyelftools
+pymongo[srv]
+dnspython
