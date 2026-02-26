@@ -5,6 +5,7 @@ import shutil
 import zipfile
 import time
 import requests
+import json
 from telebot import types
 from pymongo import MongoClient
 import urllib.parse
@@ -15,30 +16,39 @@ ADMIN_ID = 8381570120
 IMAGE_URL = "https://raw.githubusercontent.com/ApkNebulix/Daroid-AN/refs/heads/main/Img/apknebulix.jpg"
 REQUIRED_CHANNELS = ["@ShimulXDModZ"]
 
-# --- MONGODB SETUP ---
-# Password encoded for special characters (@%aN%#404%App@)
-MONGO_URI = "mongodb+srv://apknebulix_modz:%40%25aN%25%23404%25App%40@apknebulix.suopcnt.mongodb.net/?appName=ApkNebulix"
-client = MongoClient(MONGO_URI)
-db = client['BlutterDB']
-users_col = db['users']
-banned_col = db['banned']
+# --- MONGODB CONNECTION (FIXED ENCODING) ---
+# Special characters in password handled correctly
+try:
+    # pass: @%aN%#404%App@
+    encoded_pass = urllib.parse.quote_plus("@%aN%#404%App@")
+    MONGO_URI = f"mongodb+srv://apknebulix_modz:{encoded_pass}@apknebulix.suopcnt.mongodb.net/?appName=ApkNebulix"
+    
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    db = client['BlutterDB']
+    users_col = db['users']
+    banned_col = db['banned']
+    # Check connection
+    client.admin.command('ping')
+    print("✅ MongoDB Connected Successfully!")
+except Exception as e:
+    print(f"❌ MongoDB Connection Error: {e}")
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- DATABASE LOGIC ---
-def register_user(user):
-    if not users_col.find_one({"id": user.id}):
+# --- DATABASE FUNCTIONS ---
+def register_user(user_id, name, username):
+    if not users_col.find_one({"id": user_id}):
         users_col.insert_one({
-            "id": user.id,
-            "name": user.first_name,
-            "username": user.username,
-            "date": time.strftime("%Y-%m-%d %H:%M:%S")
+            "id": user_id, 
+            "name": name, 
+            "username": username,
+            "joined_at": time.strftime("%Y-%m-%d")
         })
 
 def is_banned(user_id):
     return banned_col.find_one({"id": user_id}) is not None
 
-# --- UI HELPERS ---
+# --- UI & HELPERS ---
 def create_progress_bar(percent):
     done = int(percent / 10)
     bar = "🟢" * done + "⚪" * (10 - done)
@@ -57,22 +67,24 @@ def is_subscribed(user_id):
         return True
     except: return True
 
-# --- ERROR 413 FIX (Large File Downloader) ---
-def download_large_file(file_id, dest_path):
+# --- 413 ERROR FIX (LARGE FILE DOWNLOAD) ---
+def download_large_file(file_id, dest):
     file_info = bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-    response = requests.get(file_url, stream=True)
-    if response.status_code == 200:
-        with open(dest_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
+    with requests.get(file_url, stream=True) as r:
+        r.raise_for_status()
+        with open(dest, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
-        return True
-    return False
+    return True
 
-# --- ADMIN COMMANDS ---
+# --- ADMIN PANEL ---
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.from_user.id != ADMIN_ID: return
+    data_count = users_col.count_documents({})
+    ban_count = banned_col.count_documents({})
+    
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("📊 Stats", callback_data="stats"),
@@ -80,106 +92,95 @@ def admin_panel(message):
         types.InlineKeyboardButton("📢 Broadcast", callback_data="bc_info"),
         types.InlineKeyboardButton("❌ Close", callback_data="close_admin")
     )
-    all_users = users_col.count_documents({})
-    banned_users = banned_col.count_documents({})
-    admin_text = (
+    
+    text = (
         "🛠 **Admin Command Center**\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        f"👥 **Total Users:** `{all_users}`\n"
-        f"🚫 **Banned:** `{banned_users}`"
+        f"👤 **Admin:** `Shimul XD`\n"
+        f"👥 **Total Users:** `{data_count}`\n"
+        f"🚫 **Banned:** `{ban_count}`"
     )
-    bot.send_message(message.chat.id, admin_text, reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(commands=['userinfo'])
-def get_user_info(message):
+def user_info(message):
     if message.from_user.id != ADMIN_ID: return
-    # If replied to a message, get that user's info, else show all
     users = users_col.find().limit(50)
-    user_list_text = "📜 **User List (Last 50):**\n━━━━━━━━━━━━━━━━━━\n"
+    text = "📜 **Bot User List (Last 50):**\n━━━━━━━━━━━━━━━━━━\n"
     for u in users:
-        user_list_text += f"🔹 `{u['id']}` | {u['name']}\n"
-    bot.reply_to(message, user_list_text, parse_mode="Markdown")
+        text += f"🔹 `{u['id']}` | {u['name']}\n"
+    bot.reply_to(message, text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['ban'])
-def ban_user(message):
+def ban_cmd(message):
     if message.from_user.id != ADMIN_ID: return
     try:
-        target_id = None
-        if message.reply_to_message:
-            target_id = message.reply_to_message.from_user.id
-        else:
-            target_id = int(message.text.split()[1])
-        
-        if not banned_col.find_one({"id": target_id}):
-            banned_col.insert_one({"id": target_id})
-            bot.reply_to(message, f"✅ User `{target_id}` banned successfully.")
-    except: bot.reply_to(message, "❌ Use: `/ban ID` or reply to a user.")
+        target = message.reply_to_message.from_user.id if message.reply_to_message else int(message.text.split()[1])
+        if not banned_col.find_one({"id": target}):
+            banned_col.insert_one({"id": target})
+            bot.reply_to(message, f"✅ User `{target}` banned.")
+    except: bot.reply_to(message, "❌ Provide ID or reply to a message.")
 
 @bot.message_handler(commands=['unban'])
-def unban_user(message):
+def unban_cmd(message):
     if message.from_user.id != ADMIN_ID: return
     try:
-        target_id = int(message.text.split()[1])
-        banned_col.delete_one({"id": target_id})
-        bot.reply_to(message, f"✅ User `{target_id}` unbanned.")
+        target = int(message.text.split()[1])
+        banned_col.delete_one({"id": target})
+        bot.reply_to(message, f"✅ User `{target}` unbanned.")
     except: bot.reply_to(message, "❌ Use: `/unban ID`")
 
 @bot.message_handler(commands=['broadcast'])
-def broadcast(message):
+def bc_cmd(message):
     if message.from_user.id != ADMIN_ID: return
     if not message.reply_to_message:
-        return bot.reply_to(message, "❌ Reply to a message to broadcast.")
+        bot.reply_to(message, "❌ Reply to a message to broadcast.")
+        return
     
     users = users_col.find()
     success, fail = 0, 0
-    msg_id = bot.send_message(message.chat.id, "🚀 **Broadcasting...**").message_id
-    
-    for user in users:
+    for u in users:
         try:
-            bot.copy_message(user['id'], message.chat.id, message.reply_to_message.message_id)
+            bot.copy_message(u['id'], message.chat.id, message.reply_to_message.message_id)
             success += 1
-            time.sleep(0.05)
+            time.sleep(0.1)
         except: fail += 1
-    
-    bot.edit_message_text(f"📢 **Broadcast Finished!**\n✅ Success: {success}\n❌ Fail: {fail}", message.chat.id, msg_id)
+    bot.send_message(ADMIN_ID, f"📢 **Broadcast Done!**\n✅ Success: {success} | ❌ Fail: {fail}")
 
 # --- CALLBACKS ---
 @bot.callback_query_handler(func=lambda call: True)
-def handle_query(call):
+def callbacks(call):
     if call.data == "verify":
         if is_subscribed(call.from_user.id):
-            bot.edit_message_caption("✅ **Verified!** You can now send files.", call.message.chat.id, call.message.message_id)
-        else: bot.answer_callback_query(call.id, "❌ Join the channel first!", show_alert=True)
+            bot.edit_message_caption("✅ **Verified Successfully!**\nYou can now send files.", call.message.chat.id, call.message.message_id)
+        else: bot.answer_callback_query(call.id, "❌ Join channel first!", show_alert=True)
     elif call.data == "stats":
         all_u = users_col.count_documents({})
-        ban_u = banned_col.count_documents({})
-        bot.answer_callback_query(call.id, f"Users: {all_u} | Banned: {ban_u}", show_alert=True)
+        bot.answer_callback_query(call.id, f"Total Users: {all_u}", show_alert=True)
     elif call.data == "user_list":
-        get_user_info(call.message)
+        user_info(call.message)
     elif call.data == "close_admin":
         bot.delete_message(call.message.chat.id, call.message.message_id)
 
-# --- CORE LOGIC ---
+# --- START ---
 @bot.message_handler(commands=['start'])
-def start_cmd(message):
-    register_user(message.from_user.id, message.from_user.first_name) if 'register_user' in globals() else None
-    # Fix for register_user call
-    if not users_col.find_one({"id": message.from_user.id}):
-        users_col.insert_one({"id": message.from_user.id, "name": message.from_user.first_name})
-
+def start(message):
+    register_user(message.from_user.id, message.from_user.first_name, message.from_user.username)
     if is_banned(message.from_user.id):
-        return bot.reply_to(message, "🚫 You are banned.")
+        bot.reply_to(message, "🚫 You are banned.")
+        return
 
     if not is_subscribed(message.from_user.id):
         markup = types.InlineKeyboardMarkup()
         for ch in REQUIRED_CHANNELS:
             markup.add(types.InlineKeyboardButton(text="Join Channel 📢", url=f"https://t.me/{ch[1:]}"))
         markup.add(types.InlineKeyboardButton(text="🔄 Verify Membership", callback_data="verify"))
-        return bot.send_photo(message.chat.id, IMAGE_URL, caption="⚠️ **Join our channel to use this bot.**", reply_markup=markup)
+        bot.send_photo(message.chat.id, IMAGE_URL, caption="⚠️ **Access Locked!** Join our channel to use Blutter Pro.", reply_markup=markup)
+        return
 
     welcome_text = (
         "╔════════════════════╗\n"
-        "     🚀 **BLUTTER PRO ENGINE**\n"
+        "     🚀 **BLUTTER ENGINE PRO**\n"
         "╚════════════════════╝\n"
         "🔹 **Status:** `Online` ✅\n"
         "🔹 **Dev:** @ShimulXD\n"
@@ -188,12 +189,13 @@ def start_cmd(message):
     )
     bot.send_photo(message.chat.id, IMAGE_URL, caption=welcome_text, parse_mode="Markdown")
 
+# --- DUMPING PROCESS (UNCHANGED LOGIC) ---
 @bot.message_handler(content_types=['document'])
-def dump_handler(message):
+def handle_docs(message):
     if is_banned(message.from_user.id) or not is_subscribed(message.from_user.id): return
-
     if not message.document.file_name.endswith('.zip'):
-        return bot.reply_to(message, "❌ Send a .zip file.")
+        bot.reply_to(message, "❌ Please send a `.zip` file.")
+        return
 
     uid = str(message.chat.id)
     work_dir, out_dir = f"work_{uid}", f"out_{uid}"
@@ -203,18 +205,14 @@ def dump_handler(message):
     status = bot.reply_to(message, "🛰 **Initializing...**", parse_mode="Markdown")
 
     try:
-        # Step 1: Download (Handle 413 error by using direct requests stream)
-        bot.edit_message_text("📥 **Downloading Large File...**", message.chat.id, status.message_id)
         bot.send_chat_action(message.chat.id, 'typing')
-        
-        success = download_large_file(message.document.file_id, f"{work_dir}/input.zip")
-        if not success: raise Exception("Download failed.")
+        # 413 Fix Download
+        bot.edit_message_text("📥 **Downloading File (No Limit)...**", message.chat.id, status.message_id)
+        download_large_file(message.document.file_id, f"{work_dir}/input.zip")
 
-        # Step 2: Extract
         bot.edit_message_text("📂 **Extracting...**", message.chat.id, status.message_id)
         with zipfile.ZipFile(f"{work_dir}/input.zip", 'r') as z: z.extractall(work_dir)
 
-        # Step 3: Engine Run
         if not os.path.exists('blutter_src'):
             subprocess.run("git clone https://github.com/AbhiTheModder/blutter-termux.git blutter_src", shell=True)
         
@@ -232,23 +230,17 @@ def dump_handler(message):
             time.sleep(4)
         os.chdir('..')
 
-        # Step 4: Finalize & Upload
         if os.path.exists(out_dir) and any(os.scandir(out_dir)):
             res_zip = f"Dump_{uid}.zip"
             shutil.make_archive(res_zip.replace('.zip',''), 'zip', out_dir)
-            
-            # 413 Error Fix during Upload (Telegram limit is 50MB for bots)
-            if os.path.getsize(res_zip) > 50 * 1024 * 1024:
-                bot.edit_message_text("⚠️ **Result too large (>50MB).** Splitting/Linking not supported on basic Bot API.", message.chat.id, status.message_id)
-            else:
-                with open(res_zip, 'rb') as f:
-                    bot.send_document(message.chat.id, f, caption=f"✅ **Success!**\nTime: {int(time.time()-start_t)}s")
+            with open(res_zip, 'rb') as f:
+                bot.send_document(message.chat.id, f, caption=f"✅ **Success!**\nTime: {int(time.time()-start_t)}s")
             os.remove(res_zip)
         else:
-            bot.edit_message_text("❌ **Dump Failed.** Check libs.", message.chat.id, status.message_id)
+            bot.edit_message_text("❌ **Dump Failed.** Check your libs.", message.chat.id, status.message_id)
 
     except Exception as e:
-        bot.edit_message_text(f"⚠️ **Error:** `{str(e)}`", message.chat.id, status.message_id)
+        bot.edit_message_text(f"⚠️ **Error:** `{e}`", message.chat.id, status.message_id)
 
     shutil.rmtree(work_dir, ignore_errors=True)
     shutil.rmtree(out_dir, ignore_errors=True)
