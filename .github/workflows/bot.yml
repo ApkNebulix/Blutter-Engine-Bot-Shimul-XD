@@ -1,31 +1,34 @@
-name: Blutter Bot Runner
+name: Blutter Pro Engine Bot
 
 on:
-  workflow_dispatch: # Manual start
-  push:
-    branches: [ main ]
+  schedule:
+    - cron: "0 */4 * * *" # Runs every 4 hours automatically
+  workflow_dispatch:      # Allows manual trigger
+
+# Logic to kill previous runs when a new one starts
+concurrency:
+  group: blutter-pro-bot
+  cancel-in-progress: true
 
 jobs:
-  build:
+  engine-run:
     runs-on: ubuntu-latest
+    timeout-minutes: 240 # Kills itself after 4 hours to restart via cron
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Setup Environment
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install System Dependencies
+      - name: Install Critical Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build build-essential pkg-config libicu-dev libcapstone-dev libfmt-dev
-
-      - name: Install Python Modules
-        run: |
           pip install -r requirements.txt
 
-      - name: Run Telegram Bot
+      - name: Start Animated Blutter Bot
         run: python main.py
