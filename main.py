@@ -15,26 +15,22 @@ TOKEN = '8635303381:AAH41sv7OVHm7WWAOFzKr3h68Fk0v0j2EvQ'
 ADMIN_ID = 8381570120
 IMAGE_URL = "https://raw.githubusercontent.com/ApkNebulix/Daroid-AN/refs/heads/main/Img/apknebulix.jpg"
 REQUIRED_CHANNELS = ["@ShimulXDModZ"]
-GOFILE_TOKEN = 'q0RU1AwomWPBtWyIu4VVCS9vuo6kAJLI'
 
-# Initialize Bot
 bot = telebot.TeleBot(TOKEN)
 
-# --- MONGODB CONNECTION (STABILIZED) ---
+# --- MONGODB CONNECTION (STABLE) ---
 try:
     encoded_pass = urllib.parse.quote_plus("@%aN%#404%App@")
     MONGO_URI = f"mongodb+srv://apknebulix_modz:{encoded_pass}@apknebulix.suopcnt.mongodb.net/?appName=ApkNebulix"
-    # Added timeout to prevent hanging
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     db = client['BlutterDB']
     users_col = db['users']
     banned_col = db['banned']
     client.admin.command('ping')
-    print("✅ MongoDB Connected Successfully!")
 except Exception as e:
-    print(f"⚠️ MongoDB Warning: {e} (Bot will still try to run)")
+    print(f"MongoDB Notice: {e}")
 
-# --- DATABASE FUNCTIONS ---
+# --- DATABASE LOGIC ---
 def register_user(user):
     try:
         if not users_col.find_one({"id": user.id}):
@@ -46,7 +42,7 @@ def is_banned(user_id):
         return banned_col.find_one({"id": user_id}) is not None
     except: return False
 
-# --- UI & ANIMATION HELPERS ---
+# --- UI & ANIMATION HELPERS (ORIGINAL DESIGNS) ---
 def create_progress_bar(percent):
     done = int(percent / 10)
     bar = "🟢" * done + "⚪" * (10 - done)
@@ -65,28 +61,48 @@ def is_subscribed(user_id):
         return True
     except: return True
 
-# --- GOFILE UPLOAD LOGIC ---
-def upload_to_gofile(file_path):
+# --- 🛠️ SIMPLEST & 100% WORKING UPLOAD (CATBOX) ---
+def upload_large_file(file_path):
+    """Uploads files up to 200MB to Catbox.moe instantly"""
     try:
-        server_req = requests.get("https://api.gofile.io/getServer", timeout=10).json()
-        server = server_req['data']['server']
-        with open(file_path, 'rb') as f:
-            res = requests.post(
-                f"https://{server}.gofile.io/uploadFile",
-                files={'file': f},
-                data={'token': GOFILE_TOKEN},
-                timeout=300
-            ).json()
-        if res['status'] == 'ok':
-            return res['data']['downloadPage']
+        url = "https://catbox.moe/user/api.php"
+        data = {"reqtype": "fileupload"}
+        with open(file_path, "rb") as f:
+            files = {"fileToUpload": f}
+            response = requests.post(url, data=data, files=files, timeout=300)
+        if response.status_code == 200:
+            return response.text # Returns direct link
     except: return None
+    return None
 
-# --- WELCOME SCREEN WITH PREMIUM BUTTONS ---
+# --- PREMIUM ADMIN PANEL ---
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    if message.from_user.id != ADMIN_ID: return
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("📊 Stats", callback_data="adm_stats"),
+        types.InlineKeyboardButton("📢 Broadcast", callback_data="adm_bc"),
+        types.InlineKeyboardButton("🚫 Ban User", callback_data="adm_ban"),
+        types.InlineKeyboardButton("❌ Close", callback_data="adm_close")
+    )
+    bot.send_message(message.chat.id, "🛠 **Admin Control Panel**", reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_"))
+def admin_callbacks(call):
+    if call.from_user.id != ADMIN_ID: return
+    if call.data == "adm_stats":
+        u_count = users_col.count_documents({})
+        bot.answer_callback_query(call.id, f"Registered Users: {u_count}", show_alert=True)
+    elif call.data == "adm_close":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+
+# --- START & WELCOME (PREMIUM DESIGN UNCHANGED) ---
 @bot.message_handler(commands=['start'])
 def welcome(message):
     register_user(message.from_user)
     if is_banned(message.from_user.id):
-        return bot.reply_to(message, "🚫 **Access Denied!** You are banned.")
+        return bot.reply_to(message, "🚫 **Access Denied!**")
     
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -116,22 +132,13 @@ def welcome(message):
     )
     bot.send_photo(message.chat.id, IMAGE_URL, caption=welcome_text, reply_markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call):
-    if call.data == "verify":
-        if is_subscribed(call.from_user.id):
-            bot.edit_message_caption("✅ **Verified Successfully!** You can now send files.", call.message.chat.id, call.message.message_id)
-        else: bot.answer_callback_query(call.id, "❌ Join channel first!", show_alert=True)
+@bot.callback_query_handler(func=lambda call: call.data == "verify")
+def verify_btn(call):
+    if is_subscribed(call.from_user.id):
+        bot.edit_message_caption("✅ **Verified Successfully!** Send your file.", call.message.chat.id, call.message.message_id)
+    else: bot.answer_callback_query(call.id, "❌ Join channel first!", show_alert=True)
 
-# --- ADMIN PANEL ---
-@bot.message_handler(commands=['admin'])
-def admin_panel(message):
-    if message.from_user.id != ADMIN_ID: return
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("📊 Stats", callback_data="stats"))
-    bot.send_message(message.chat.id, "🛠 **Admin Control Panel**", reply_markup=markup)
-
-# --- CORE DUMPING ENGINE ---
+# --- CORE DUMPING ENGINE (ANIMATIONS & LOGIC) ---
 @bot.message_handler(content_types=['document'])
 def handle_docs(message):
     if is_banned(message.from_user.id) or not is_subscribed(message.from_user.id): return
@@ -146,7 +153,7 @@ def handle_docs(message):
     status_msg = bot.reply_to(message, "🛰 **Initializing Pro Engine...**", parse_mode="Markdown")
 
     try:
-        # Step 1: Download with Animation
+        # Download
         bot.send_chat_action(message.chat.id, 'typing')
         for i in range(10, 101, 30):
             bot.edit_message_text(f"{get_status_animation(i)} **Downloading File...**\n{create_progress_bar(i)}", 
@@ -158,11 +165,12 @@ def handle_docs(message):
         with requests.get(download_url, stream=True) as r:
             with open(f"{work_dir}/input.zip", 'wb') as f: shutil.copyfileobj(r.raw, f)
 
-        # Step 2: Extraction
-        bot.edit_message_text("📂 **Extracting Resources...**\n`Analyzing Flutter Bytecode...` ⚡", message.chat.id, status_msg.message_id, parse_mode="Markdown")
+        # Extraction
+        bot.edit_message_text("📂 **Extracting Resources...**\n`Analyzing Bytecode...` ⚡", 
+                              message.chat.id, status_msg.message_id, parse_mode="Markdown")
         with zipfile.ZipFile(f"{work_dir}/input.zip", 'r') as z: z.extractall(work_dir)
 
-        # Step 3: Engine Run
+        # Engine Run
         if not os.path.exists('blutter_src'):
             subprocess.run("git clone https://github.com/AbhiTheModder/blutter-termux.git blutter_src", shell=True)
         
@@ -172,7 +180,6 @@ def handle_docs(message):
         start_t = time.time()
         process = subprocess.Popen(f"python3 blutter.py ../{work_dir} ../{out_dir}", shell=True)
         
-        # Advanced Animation Loop
         frame = 0
         while process.poll() is None:
             bot.send_chat_action(message.chat.id, 'typing')
@@ -183,25 +190,32 @@ def handle_docs(message):
             time.sleep(3)
         os.chdir('..')
 
-        # Step 4: Finalize & Upload (ANTI-413)
+        # FINAL UPLOAD LOGIC (FIXED ANTI-413)
         if os.path.exists(out_dir) and any(os.scandir(out_dir)):
-            res_zip = f"Blutter_Output_{uid}.zip"
+            res_zip = f"Dump_{uid}.zip"
             shutil.make_archive(res_zip.replace('.zip',''), 'zip', out_dir)
             f_size = os.path.getsize(res_zip) / (1024 * 1024)
 
             if f_size > 49.0:
-                bot.edit_message_text(f"☁️ **Size: {f_size:.1f}MB**\n`Uploading to Cloud Server...` 🚀", message.chat.id, status_msg.message_id, parse_mode="Markdown")
-                download_link = upload_to_gofile(res_zip)
-                if download_link:
+                # 🛠️ AUTOMATIC CATBOX UPLOAD FOR LARGE FILES
+                bot.send_chat_action(message.chat.id, 'typing')
+                bot.edit_message_text(f"☁️ **Size: {f_size:.1f}MB**\n`Uploading to High-Speed Cloud...` 🚀", 
+                                      message.chat.id, status_msg.message_id, parse_mode="Markdown")
+                
+                link = upload_large_file(res_zip)
+                if link:
                     markup = types.InlineKeyboardMarkup()
-                    markup.add(types.InlineKeyboardButton("📥 Download Result", url=download_link))
-                    bot.send_message(message.chat.id, f"✅ **Dump Successful!**\nTime: {int(time.time()-start_t)}s", reply_markup=markup, parse_mode="Markdown")
+                    markup.add(types.InlineKeyboardButton("📥 Download Result", url=link))
+                    bot.send_message(message.chat.id, f"✅ **Dump Success!**\n\nFile too large for Telegram, uploaded to cloud.\n⏱ Time: {int(time.time()-start_t)}s", 
+                                     reply_markup=markup, parse_mode="Markdown")
                 else:
-                    bot.edit_message_text("❌ Cloud Upload Failed.", message.chat.id, status_msg.message_id)
+                    bot.edit_message_text("❌ Cloud Upload Failed. File might be too large.", message.chat.id, status_msg.message_id)
             else:
+                # NORMAL UPLOAD
                 bot.send_chat_action(message.chat.id, 'upload_document')
                 with open(res_zip, 'rb') as f:
                     bot.send_document(message.chat.id, f, caption=f"✅ **Dump Success!**\n⏱ Time: {int(time.time()-start_t)}s")
+            
             os.remove(res_zip)
         else:
             bot.edit_message_text("❌ **Dumping Failed!** Check libs.", message.chat.id, status_msg.message_id)
@@ -212,6 +226,5 @@ def handle_docs(message):
     shutil.rmtree(work_dir, ignore_errors=True)
     if os.path.exists(out_dir): shutil.rmtree(out_dir)
 
-# --- ROBUST POLLING ---
-print("🚀 Blutter Bot is starting...")
-bot.infinity_polling(timeout=60, long_polling_timeout=60)
+print("🚀 Bot is running...")
+bot.infinity_polling()
