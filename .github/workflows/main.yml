@@ -1,0 +1,41 @@
+name: Blutter Pro Engine 100%
+
+on:
+  schedule:
+    - cron: "0 */4 * * *" # প্রতি ৪ ঘণ্টা পর পর রান হবে
+  workflow_dispatch:
+
+concurrency:
+  group: blutter-pro
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential pkg-config libicu-dev libcapstone-dev libfmt-dev g++-11
+          pip install pyTelegramBotAPI pymongo requests dnspython
+
+      - name: Setup Blutter Source
+        run: |
+          git clone https://github.com/AbhiTheModder/blutter-termux.git blutter_src
+          cd blutter_src
+          # Fixing compatibility issues in source
+          find . -type f -exec sed -i 's/std::format/fmt::format/g' {} +
+
+      - name: Run Supreme Bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: python main.py
