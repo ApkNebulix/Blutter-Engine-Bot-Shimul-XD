@@ -2,10 +2,9 @@ name: Blutter Pro Engine Bot
 
 on:
   schedule:
-    - cron: "0 */4 * * *" # Runs every 4 hours automatically
-  workflow_dispatch:      # Allows manual trigger
+    - cron: "0 */4 * * *" # প্রতি ৪ ঘণ্টা পর পর রান হবে
+  workflow_dispatch:      # ম্যানুয়ালি রান করার অপশন
 
-# Logic to kill previous runs when a new one starts
 concurrency:
   group: blutter-pro-bot
   cancel-in-progress: true
@@ -13,7 +12,7 @@ concurrency:
 jobs:
   engine-run:
     runs-on: ubuntu-latest
-    timeout-minutes: 240 # Kills itself after 4 hours to restart via cron
+    timeout-minutes: 240 
 
     steps:
       - name: Checkout Code
@@ -28,7 +27,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build build-essential pkg-config libicu-dev libcapstone-dev libfmt-dev
-          pip install -r requirements.txt
+          pip install pyTelegramBotAPI pymongo requests dnspython
 
-      - name: Start Animated Blutter Bot
+      - name: Notify Log Channel (Start)
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
+          -d "chat_id=@BotControlPanel" \
+          -d "text=🚀 **Blutter Pro Engine Instance Started**%0A🕒 Time: $(date)%0A🛠 Status: Running..." \
+          -d "parse_mode=Markdown"
+
+      - name: Start Professional Bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
         run: python main.py
