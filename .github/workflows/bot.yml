@@ -2,34 +2,43 @@ name: Blutter Pro Engine Bot
 
 on:
   schedule:
-    - cron: "0 */4 * * *" # Runs every 4 hours
-  workflow_dispatch:      # Manual trigger
+    - cron: "0 */4 * * *" # প্রতি ৪ ঘণ্টা অন্তর
+  workflow_dispatch:      # ম্যানুয়াল ট্রিগার
 
 concurrency:
   group: blutter-pro-bot
-  cancel-in-progress: true
+  cancel-in-progress: true # নতুন রান শুরু হলে পুরনোটি বন্ধ করে দিবে
 
 jobs:
   engine-run:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 240   # ৪ ঘণ্টা পর অটোমেটিক কিল হবে যাতে নতুনটি শুরু হতে পারে
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # আপডেট করা ভার্সন v4
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+          cache: 'pip' # পাইথন প্যাকেজ ক্যাশ করবে যাতে দ্রুত লোড হয়
 
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build build-essential pkg-config libicu-dev libcapstone-dev libfmt-dev
-          pip install pyTelegramBotAPI requests pyelftools pymongo[srv] dnspython
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build build-essential pkg-config \
+            libicu-dev libcapstone-dev libfmt-dev
+          
+          # ডিপেনডেন্সি ইন্সটল
+          pip install --upgrade pip
+          pip install pyTelegramBotAPI requests pyelftools "pymongo[srv]" dnspython
 
       - name: Run Blutter Pro Bot
         env:
-          LOG_CHANNEL: "@BotControlPanel" # এখানে আপনার লগ চ্যানেলের ইউজারনেম দিন
-        run: python main.py
+          LOG_CHANNEL: "@BotControlPanel"
+        # এখানে 'timeout' কমান্ড যোগ করা হয়েছে যাতে ৪ ঘণ্টা পূর্ণ হওয়ার ৫ মিনিট আগে 
+        # স্ক্রিপ্টটি নিজ থেকে সেফলি এক্সিট হয়। 
+        run: |
+          timeout 235m python main.py || echo "Bot session timed out for next schedule"
